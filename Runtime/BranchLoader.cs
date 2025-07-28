@@ -22,7 +22,7 @@ public static class BranchLoader
         using var reader = new BinaryReader(File.OpenRead(path));
 
         int branchCount = reader.ReadInt32();
-        var dict = new Dictionary<int, BranchChoiceRuntime[]>(branchCount);
+        var dict = new Dictionary<int, BranchChoiceRuntime[]>(branchCount); // Pre-size for performance
 
         for (int i = 0; i < branchCount; i++)
         {
