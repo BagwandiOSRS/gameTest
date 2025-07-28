@@ -10,7 +10,7 @@ public static class WaypointLoader
         using var reader = new BinaryReader(File.OpenRead(path));
 
         int count = reader.ReadInt32();
-        var dict = new Dictionary<int, Vector2>(count);
+        var dict = new Dictionary<int, Vector2>(count); // Pre-size for better performance
 
         for (int i = 0; i < count; i++)
         {

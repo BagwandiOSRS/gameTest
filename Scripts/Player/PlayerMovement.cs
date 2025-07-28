@@ -26,6 +26,18 @@ public class PlayerMovement : MonoBehaviour
     [SerializeField] private int[] testPathKeys;
     [SerializeField] private int testBranchKey;
     public int LastBranchId { get; private set; }
+    
+    // Performance constants
+    private const float SQR_ARRIVAL_THRESHOLD = 1f;
+    private const float ROTATION_SPEED = 500f;
+    private const float ROTATION_THRESHOLD = 0.5f;
+    private const int INITIAL_PATH_CAPACITY = 32;
+    
+    // Cached values to reduce allocations
+    private Vector2 playerXZ = new Vector2();
+    private Vector2 tempVector2 = new Vector2();
+    private List<Vector2> pathList = new List<Vector2>(INITIAL_PATH_CAPACITY);
+    
     void Awake()
     {
         Instance = this;
@@ -43,6 +55,7 @@ public class PlayerMovement : MonoBehaviour
             SetDirection();
         }
     }
+    
     void AlignToGround()
     {
         Vector3 origin = parentRoot.position + Vector3.up;
@@ -53,24 +66,41 @@ public class PlayerMovement : MonoBehaviour
             parentRoot.position = pos;
         }
     }
+    
     void CacheRotationTowards(Vector2 targetPos)
     {
-        Vector2 playerXZ = new(parentRoot.position.x, parentRoot.position.z);
-        Vector2 dirXZ = (targetPos - playerXZ).normalized;
-        cachedDirection = new Vector3(dirXZ.x, 0f, dirXZ.y);
+        // Reuse cached Vector2 to avoid allocation
+        playerXZ.x = parentRoot.position.x;
+        playerXZ.y = parentRoot.position.z;
+        
+        tempVector2.x = targetPos.x - playerXZ.x;
+        tempVector2.y = targetPos.y - playerXZ.y;
+        tempVector2.Normalize();
+        
+        cachedDirection.x = tempVector2.x;
+        cachedDirection.y = 0f;
+        cachedDirection.z = tempVector2.y;
+        
         targetRotation = Quaternion.LookRotation(cachedDirection, Vector3.up);
     }
+    
     public void SetDirection()
     {
         CacheRotationTowards(path[destination]);
         parentRoot.rotation = targetRotation;
     }
+    
     public void Move()
     {
-        Vector2 playerXZ = new(parentRoot.position.x, parentRoot.position.z);
-        float sqrDist = (path[destination] - playerXZ).sqrMagnitude;
+        // Reuse cached Vector2
+        playerXZ.x = parentRoot.position.x;
+        playerXZ.y = parentRoot.position.z;
+        
+        tempVector2.x = path[destination].x - playerXZ.x;
+        tempVector2.y = path[destination].y - playerXZ.y;
+        float sqrDist = tempVector2.x * tempVector2.x + tempVector2.y * tempVector2.y;
 
-        if (sqrDist < 1)
+        if (sqrDist < SQR_ARRIVAL_THRESHOLD)
         {
             if (destination == 0 || destination == path.Length - 1) return;
 
@@ -83,15 +113,16 @@ public class PlayerMovement : MonoBehaviour
 
         if (isRotating)
         {
-            parentRoot.rotation = Quaternion.RotateTowards(parentRoot.rotation, targetRotation, 500 * Time.deltaTime);
+            parentRoot.rotation = Quaternion.RotateTowards(parentRoot.rotation, targetRotation, ROTATION_SPEED * Time.deltaTime);
 
-            if (Quaternion.Angle(parentRoot.rotation, targetRotation) < 0.5f)
+            if (Quaternion.Angle(parentRoot.rotation, targetRotation) < ROTATION_THRESHOLD)
             {
                 parentRoot.rotation = targetRotation;
                 isRotating = false;
             }
         }
     }
+    
     public void Turn()
     {
         Direction *= -1;
@@ -106,15 +137,26 @@ public class PlayerMovement : MonoBehaviour
                 PathBrowser.Instance.DestroyAllChildren();
         }
     }
+    
     void UpdatePath(int[] wpKeys, int branchKey)
     {
-        path = new Vector2[wpKeys.Length + 1];
+        // Use List to avoid frequent array reallocations
+        pathList.Clear();
+        if (pathList.Capacity < wpKeys.Length + 1)
+        {
+            pathList.Capacity = wpKeys.Length + 1;
+        }
+        
         for (int i = 0; i < wpKeys.Length; i++)
         {
-            path[i] = wpDict[wpKeys[i]];
+            pathList.Add(wpDict[wpKeys[i]]);
         }
-        path[wpKeys.Length] = wpDict[branchKey];
+        pathList.Add(wpDict[branchKey]);
+        
+        // Convert to array only when necessary
+        path = pathList.ToArray();
     }
+    
     public void Choose(int choice)
     {
         var selected = branchDict[activeBranchId][choice];
@@ -123,32 +165,39 @@ public class PlayerMovement : MonoBehaviour
         destination = path.Length - 2;
         SetDirection();
     }
+    
     public void CacheDirection()
     {
         cachedPlayerdestination = Direction;
     }
+    
     public void SetActiveBranch(int branchId)
     {
         activeBranchId = branchId;
         LastBranchId = branchId;
     }
+    
     public string FilterChoices()
     {
         var choices = branchDict[activeBranchId];
         if (path.Length < 2) return "";
 
         Vector2 comparator = Direction == 1 ? path[^2] : path[1];
+        Vector2 currentBranchPos = wpDict[activeBranchId]; // Cache this lookup
 
         foreach (var choice in choices)
         {
             int[] keys = choice.pathSequence;
             if (keys.Length < 2) continue;
 
-            // if the wp directly behind you equals the first wp of a loop, filter it
-            Vector2 end = wpDict[keys[^1]];
-            bool valid = wpDict[keys[0]] == wpDict[activeBranchId] ?
-                end == comparator :
-                end == path[^2];
+            // Cache dictionary lookups
+            Vector2 choiceStart = wpDict[keys[0]];
+            Vector2 choiceEnd = wpDict[keys[^1]];
+            
+            // Optimized comparison logic
+            bool valid = (choiceStart.x == currentBranchPos.x && choiceStart.y == currentBranchPos.y) ?
+                (choiceEnd.x == comparator.x && choiceEnd.y == comparator.y) :
+                (choiceEnd.x == path[^2].x && choiceEnd.y == path[^2].y);
 
             if (valid)
                 return choice.choiceName;
@@ -157,5 +206,4 @@ public class PlayerMovement : MonoBehaviour
         Debug.LogWarning("filter error");
         return "";
     }
-
 }
